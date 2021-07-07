@@ -1,3 +1,4 @@
+import os
 import json
 import time
 import logging
@@ -14,7 +15,7 @@ from proton.reactor import ApplicationEvent, Container, EventInjector, Selector
 #############################################################################################
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
-def logger_setup(name, file_name, level=logging.DEBUG):
+def logger_setup(name, file_name, level=os.environ['LOG_LEVEL']):
     """Setup different loggers here"""
 
     file_handler = logging.FileHandler(file_name)
@@ -26,7 +27,7 @@ def logger_setup(name, file_name, level=logging.DEBUG):
 
     return logger
 
-general_log = logger_setup(' Local Manager 1 ','/logs/lm1.log')
+general_log = logger_setup(os.environ['LOGGER_NAME'],os.environ['LOG_PATH_GENERAL'])
 time_log = logger_setup(' Timing Local Manager 1 ','/logs/lm1time.log')
 
 #############################################################################################
@@ -158,8 +159,7 @@ def change_ep_of_car(bjson):
     """ To change the endpoint of the car in case of chaging zones """
     #start_change_ep = time.time()
     try:
-        response = http_client.fetch("http://response-router-1-service.clm-test.empower:3000/api/item/from_local_mgr_api/21"\
-                                     ,method='POST',body=bjson)        
+        response = http_client.fetch(os.environ['RESPONSE_ROUTER_POST_ADDRESS'],method='POST',body=bjson)        
     except Exception as e:
         general_log.error("Error: %s" % e)
     else:
@@ -178,7 +178,7 @@ def make_app():
 if __name__ == '__main__':
 
   app = make_app()
-  app.listen(3500)
+  app.listen(os.environ['API_PORT'])
   print("Started Local Manager 1 REST Server",flush=True)
   http_client = tornado.httpclient.HTTPClient()
   IOLoop.instance().start()
