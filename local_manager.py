@@ -51,11 +51,14 @@ class Subscriber(MessagingHandler):
         self.car_ref_time = 0
         self.curr_location = ""
         self.end_zone = set()
+        self.user = os.environ['MSG_BROKER_USER']
+        self.password = os.environ['MSG_BROKER_PASSWORD']
+
         for ez in self.lm_config["transition_areas"]:
             self.end_zone.add(ez["to"])
 
     def on_start(self, event):
-        conn = event.container.connect(self.server)
+        conn = event.container.connect(self.server, user=self.user, password=self.password)
         for topic in self.receive_topic_names:
             self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic,\
                                    options=Selector(self.filterstring))})
