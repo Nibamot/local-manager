@@ -13,6 +13,7 @@ from proton.reactor import ApplicationEvent, Container, EventInjector, Selector
 #############################################################################################
 ################################ Logging #################################
 #############################################################################################
+#test
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
 def logger_setup(name, level=logging.DEBUG):
