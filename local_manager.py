@@ -48,28 +48,54 @@ time_log = logger_setup(' Timing Local Manager 1 ')
 ################################ Logging #################################
 #############################################################################################
 
+
+
+#######################################################################################
+#########################TENTATIVE CONFIG DICTS########################################
+#######################################################################################
+
+sm_dict={}
+qtcode_dict={}
+
+def get_config(json_config):
+    amqp_ep = json_config["ref_amqpep"]
+    for lm in json_config["local_config"]:
+        for qt in lm["qtcode_list"]:
+            qtcode_dict.update({qt:lm["message"].get("id")})
+            sm_dict.update({lm["message"].get("id"):lm["message"].get("endpoints")})
+    return sm_dict,qtcode_dict,amqp_ep
+
+
+
+#######################################################################################
+#########################TENTATIVE CONFIG DICTS########################################
+#######################################################################################
+
+
+
 class Subscriber(MessagingHandler):
     def __init__(self, server, receive_topic_names, config):
         super(Subscriber, self).__init__()
         self.server = server
         self.receive_topic_names = receive_topic_names
         self.receivers = dict()
-        self.car_location = dict()
+        self.car_details = dict()
         self.lm_config = config
         self.filterstring = ""
-        for qt in  self.lm_config["coverage_area"]:
+        for qt in  qtcode_dict.keys():
             self.filterstring+="quadTree=\'"+qt+"\' OR "
         self.filterstring = self.filterstring[:-3]
         self.addr_change = ""
-        self.need_update = 0
+        #self.need_update = 0
         self.car_ref_time = 0
         self.curr_location = ""
-        self.end_zone = set()
         self.user = os.environ['MSG_BROKER_USER']
         self.password = os.environ['MSG_BROKER_PASSWORD']
+        self.receive_msg_time = 0 
+        self.time_and_position = dict()
+        self.sm_time_type = dict()
 
-        for ez in self.lm_config["transition_areas"]:
-            self.end_zone.add(ez["to"])
+
 
     def on_start(self, event):
         conn = event.container.connect(self.server, user=self.user, password=self.password)
@@ -79,39 +105,39 @@ class Subscriber(MessagingHandler):
         #"quadTree='A1' OR quadTree='A2' OR quadTree='A3' OR quadTree='B1' OR quadTree='B2' OR quadTree='B3'"
 
     def on_message(self, event):
-        receive_msg = time.time()
+        self.receive_msg_time = time.time()
         self.car_ref_time = float(event.message.properties["timestamp"])
         data = json.loads(event.message.body)
         car_id = data["Car_ID"]
-        self.need_update = 0
+        #self.need_update = 0
         self.curr_location = event.message.properties["quadTree"]
-        if car_id not in self.car_location:
-            self.car_location.update({car_id:self.curr_location})
-            #general_log.debug(self.car_location)
-            general_log.info("Car "+str(car_id)+" is in "+self.curr_location)
-        if self.curr_location in self.end_zone:
-            #general_log.debug("Currently "+car_id+ " at "+ self.curr_location)
 
-            for k in self.lm_config["transition_areas"]:
-                self.addr_change = k["Address"]
-                
-                if k["from"] == self.car_location[car_id] and k["to"] == self.curr_location:
-                    bjson = json.dumps({'Car_ID':car_id,\
-                                     'EP':self.addr_change, 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time})
-                    change_ep_of_car(bjson)
-                    send_change_ep_msg = time.time()
-                    #time_log.info(str((send_change_ep_msg-self.car_ref_time)*1000)+" ms from msg sent from car to change of endpoint")
-                    time_log.info(str((send_change_ep_msg-receive_msg)*1000)+" ms from reception of msg sent from car to change of endpoint")
-                    #general_log.debug("CarID: "+car_id+ " Previous Position: "+self.car_location[car_id]+" Current position: "+ self.curr_location)
-                    self.need_update = 1
-                    #general_log.info("CarID: "+car_id+ " Previous Position: "+self.car_location[car_id]+" Current position: "+ self.curr_location+" Switching to:"+self.addr_change)
-                    break
+        general_log.info("Car "+str(car_id)+" is in "+self.curr_location)
 
-        if self.need_update == 0:
-            self.car_location.update({car_id:self.curr_location})
-            general_log.debug(self.car_location)
+        if car_id not in self.car_details:
+            self.sm_time_type.update({"sm_type":qtcode_dict[self.curr_location], "sm_sent_timestamp":time.time()})
+            self.time_and_position.update({"location":self.curr_location,"receive_timestamp":self.receive_msg_time, "support_message":self.sm_time_type})
+            self.car_details.update({car_id:self.time_and_position})
+            bjson = json.dumps({'messages':[{'Car_ID':car_id,\
+                                     'message':sm_dict[qtcode_dict[self.curr_location]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
+            change_ep_of_car(bjson)
+            send_change_ep_msg = time.time()
+            time_log.info(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
+
         else:
-            del self.car_location[car_id]
+            retry_threshold = time.time()-self.car_details[car_id]["support_message"]["sm_sent_timestamp"]
+            print(self.car_details[car_id]["support_message"]["sm_sent_timestamp"])
+            if (retry_threshold > 5 and qtcode_dict[self.curr_location] == self.sm_time_type["sm_type"])  or (qtcode_dict[self.curr_location] != self.sm_time_type["sm_type"]):
+                self.sm_time_type.update({"sm_type":qtcode_dict[self.curr_location], "sm_sent_timestamp":time.time()})
+                self.time_and_position.update({"location":self.curr_location,"receive_timestamp":self.receive_msg_time, "support_message":self.sm_time_type})
+                self.car_details.update({car_id:self.time_and_position})
+                bjson = json.dumps({'messages':[{'Car_ID':car_id,\
+                                     'message':sm_dict[qtcode_dict[self.curr_location]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
+                change_ep_of_car(bjson)
+                send_change_ep_msg = time.time()
+                time_log.info(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
+
+                #del self.car_details[car_id]
 
 AMQP_Addr=""
 
@@ -121,28 +147,26 @@ class MMtoLMConfig(RequestHandler):
     def post(self, id):
         """Handles the behaviour of POST calls"""
         json_form = json.loads(self.request.body)
-        self.write(json_form)
-        AMQP_Addr = json_form["AMQP_Addr"]
+        #self.write(json_form)
+        lm_sm_config,lm_qt_config,amqp_ep = get_config(json_form)
         topics = ["FROM_CARS"]
-        client_sub = Subscriber(AMQP_Addr, topics, json_form) 
+        client_sub = Subscriber(amqp_ep, topics, json_form)#163.162.42.24:5672  
         container = Container(client_sub)
         qpid_thread_sub = Thread(target=container.run)
         qpid_thread_sub.start()
 
     def put(self, id):
         """Handles the behaviour of PUT calls"""
-        global items
-        new_items = [item for item in items if item['id'] is not int(id)]
-        items = new_items
-        self.write({'message': 'Item with id %s was updated' % id})
+        self.write("Not supposed to PUT!")
+    
+    def get(self, id):
+        """Handles the behaviour of GET calls"""
+        self.write('NOT SUPPOSED TO GET!')
 
 
     def delete(self, id):
         """Handles the behaviour of DELETE calls"""
-        global items
-        new_items = [item for item in items if item['id'] is not int(id)]
-        items = new_items
-        self.write({'message': 'Item with id %s was deleted' % id})
+        self.write("Not supposed to DELETE!")
     
 
 
@@ -179,6 +203,7 @@ def change_ep_of_car(bjson):
         response = http_client.fetch(os.environ['RESPONSE_ROUTER_POST_ADDRESS'],method='POST',body=bjson)        
     except Exception as e:
         general_log.error("Error: %s" % e)
+        general_log.error("Couldn't POST to Response Router")
     else:
         general_log.debug(response.body)
         #general_log.debug(str((time.time()-start_change_ep)*1000)+" ms to POST")
