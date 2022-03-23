@@ -1,19 +1,19 @@
 import os
+import sys
 import json
 import time
 import logging
+import threading
 import tornado.httpclient
-from tornado.web import Application, RequestHandler
 from tornado.ioloop import IOLoop
-from proton import Message
-from threading import Thread
+from proton.reactor import Container
 from proton.handlers import MessagingHandler
-from proton.reactor import ApplicationEvent, Container, EventInjector, Selector
+from tornado.web import Application, RequestHandler
 
 #############################################################################################
 ################################ Logging #################################
 #############################################################################################
-#test
+
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
 def logger_setup(name, level=logging.DEBUG):
@@ -49,6 +49,42 @@ time_log = logger_setup(' Timing Local Manager 1 ')
 #############################################################################################
 
 
+################################################################
+
+class TraceThread(threading.Thread):
+  """ Simple thread class to kill threads using traces"""
+
+  def __init__(self, *args, **keywords):
+    threading.Thread.__init__(self, *args, **keywords)
+    self.killed = False
+  
+  def start(self):
+    self.__run_backup = self.run
+    self.run = self.__run     
+    threading.Thread.start(self)
+  
+  def __run(self):
+    sys.settrace(self.globaltrace)
+    self.__run_backup()
+    self.run = self.__run_backup
+
+  def globaltrace(self, frame, why, arg):
+    if why == 'call':
+      return self.localtrace
+    else:
+      return None
+  
+  def localtrace(self, frame, why, arg):
+    if self.killed:
+      if why == 'line':
+        raise SystemExit()
+    return self.localtrace
+  
+  def kill(self):
+    self.killed = True
+
+#################################################################
+
 
 #######################################################################################
 #########################TENTATIVE CONFIG DICTS########################################
@@ -80,13 +116,6 @@ class Subscriber(MessagingHandler):
         self.receive_topic_names = receive_topic_names
         self.receivers = dict()
         self.car_details = dict()
-        self.lm_config = config
-        self.filterstring = ""
-        for qt in  qtcode_dict.keys():
-            self.filterstring+="quadTree=\'"+qt+"\' OR "
-        self.filterstring = self.filterstring[:-3]
-        self.addr_change = ""
-        #self.need_update = 0
         self.car_ref_time = 0
         self.curr_location = ""
         self.user = os.environ['MSG_BROKER_USER']
@@ -100,8 +129,7 @@ class Subscriber(MessagingHandler):
     def on_start(self, event):
         conn = event.container.connect(self.server, user=self.user, password=self.password)
         for topic in self.receive_topic_names:
-            self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic,\
-                                   options=Selector(self.filterstring))})
+            self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic)})
         #"quadTree='A1' OR quadTree='A2' OR quadTree='A3' OR quadTree='B1' OR quadTree='B2' OR quadTree='B3'"
 
     def on_message(self, event):
@@ -109,37 +137,57 @@ class Subscriber(MessagingHandler):
         self.car_ref_time = float(event.message.properties["timestamp"])
         data = json.loads(event.message.body)
         car_id = data["Car_ID"]
-        #self.need_update = 0
         self.curr_location = event.message.properties["quadTree"]
 
         general_log.info("Car "+str(car_id)+" is in "+self.curr_location)
-
-        if car_id not in self.car_details:
-            self.sm_time_type.update({"sm_type":qtcode_dict[self.curr_location], "sm_sent_timestamp":time.time()})
-            self.time_and_position.update({"location":self.curr_location,"receive_timestamp":self.receive_msg_time, "support_message":self.sm_time_type})
-            self.car_details.update({car_id:self.time_and_position})
-            bjson = json.dumps({'messages':[{'Car_ID':car_id,\
-                                     'message':sm_dict[qtcode_dict[self.curr_location]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
-            change_ep_of_car(bjson)
-            send_change_ep_msg = time.time()
-            time_log.info(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
-
-        else:
-            retry_threshold = time.time()-self.car_details[car_id]["support_message"]["sm_sent_timestamp"]
-            print(self.car_details[car_id]["support_message"]["sm_sent_timestamp"])
-            if (retry_threshold > 5 and qtcode_dict[self.curr_location] == self.sm_time_type["sm_type"])  or (qtcode_dict[self.curr_location] != self.sm_time_type["sm_type"]):
+        
+        if self.curr_location in qtcode_dict.keys():
+            if car_id not in self.car_details:
                 self.sm_time_type.update({"sm_type":qtcode_dict[self.curr_location], "sm_sent_timestamp":time.time()})
                 self.time_and_position.update({"location":self.curr_location,"receive_timestamp":self.receive_msg_time, "support_message":self.sm_time_type})
                 self.car_details.update({car_id:self.time_and_position})
+
                 bjson = json.dumps({'messages':[{'Car_ID':car_id,\
                                      'message':sm_dict[qtcode_dict[self.curr_location]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
                 change_ep_of_car(bjson)
                 send_change_ep_msg = time.time()
-                time_log.info(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
+                time_log.debug(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
 
-                #del self.car_details[car_id]
+            else:
+                retry_threshold = time.time()-self.car_details[car_id]["support_message"]["sm_sent_timestamp"]
+                if (retry_threshold > 5 and qtcode_dict[self.curr_location] == self.sm_time_type["sm_type"])  or (qtcode_dict[self.curr_location] != self.sm_time_type["sm_type"]):
+                    self.sm_time_type.update({"sm_type":qtcode_dict[self.curr_location], "sm_sent_timestamp":time.time()})
+                    self.time_and_position.update({"location":self.curr_location,"receive_timestamp":self.receive_msg_time, "support_message":self.sm_time_type})
+                    self.car_details.update({car_id:self.time_and_position})
+                    
+                    bjson = json.dumps({'messages':[{'Car_ID':car_id,\
+                                     'message':sm_dict[qtcode_dict[self.curr_location]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
+                    change_ep_of_car(bjson)
+                    send_change_ep_msg = time.time()
+                    time_log.debug(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
+
+        else:
+            bjson = json.dumps({'messages':[{'Car_ID':car_id,\
+                                     'message':sm_dict[qtcode_dict["OUT"]], 'timestamp_lm':time.time(), 'ref_timestamp_fc':self.car_ref_time}]})
+            change_ep_of_car(bjson)
+            send_change_ep_msg = time.time()
+            time_log.debug(str((send_change_ep_msg-self.receive_msg_time)*1000)+" ms from reception of msg sent from car to change of endpoint\n")
+
+
+        
 
 AMQP_Addr=""
+
+
+def kill_old_threads():
+    """ Kill older threads in case of config update"""
+
+    for i in threading.enumerate():
+        if i is not threading.main_thread() and isinstance(i, TraceThread):
+            i.kill()
+        else:
+            pass
+
 
 class MMtoLMConfig(RequestHandler):
     """ API SERVER for handling calls from the main manager regarding LM configuration"""
@@ -147,12 +195,13 @@ class MMtoLMConfig(RequestHandler):
     def post(self, id):
         """Handles the behaviour of POST calls"""
         json_form = json.loads(self.request.body)
-        #self.write(json_form)
         lm_sm_config,lm_qt_config,amqp_ep = get_config(json_form)
+        if threading.active_count() > 1:
+            kill_old_threads()
         topics = ["FROM_CARS"]
         client_sub = Subscriber(amqp_ep, topics, json_form)#163.162.42.24:5672  
         container = Container(client_sub)
-        qpid_thread_sub = Thread(target=container.run)
+        qpid_thread_sub = TraceThread(target=container.run)
         qpid_thread_sub.start()
 
     def put(self, id):
