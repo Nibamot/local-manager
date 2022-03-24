@@ -110,7 +110,7 @@ def get_config(json_config):
 
 
 class Subscriber(MessagingHandler):
-    def __init__(self, server, receive_topic_names, config):
+    def __init__(self, server, receive_topic_names):
         super(Subscriber, self).__init__()
         self.server = server
         self.receive_topic_names = receive_topic_names
@@ -199,7 +199,7 @@ class MMtoLMConfig(RequestHandler):
         if threading.active_count() > 1:
             kill_old_threads()
         topics = ["FROM_CARS"]
-        client_sub = Subscriber(amqp_ep, topics, json_form)#163.162.42.24:5672  
+        client_sub = Subscriber(amqp_ep, topics)#163.162.42.24:5672  
         container = Container(client_sub)
         qpid_thread_sub = TraceThread(target=container.run)
         qpid_thread_sub.start()
