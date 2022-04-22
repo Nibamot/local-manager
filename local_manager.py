@@ -24,6 +24,7 @@ def logger_setup(name, level=logging.DEBUG):
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.addHandler(sh)
+    logger.propagate = False
 
     return logger
 
@@ -123,6 +124,10 @@ class Subscriber(MessagingHandler):
         self.receive_msg_time = 0 
         self.time_and_position = dict()
         self.sm_time_type = dict()
+        self.connection = None
+        self.timeout_limit_max = 8
+        self.timeout_limit_min = 1
+        self.timeout_limit = 1
 
 
 
@@ -131,6 +136,45 @@ class Subscriber(MessagingHandler):
         for topic in self.receive_topic_names:
             self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic)})
         #"quadTree='A1' OR quadTree='A2' OR quadTree='A3' OR quadTree='B1' OR quadTree='B2' OR quadTree='B3'"
+        self.connection = conn
+    
+    def on_disconnected(self, event):
+        """ Triggers the disconected event when the link is lost"""
+
+        general_log.error("The connection to broker is lost. Trying to reestablish the connection")
+        self.connection.close()
+
+        if self.timeout_limit < self.timeout_limit_max:
+            time.sleep(self.timeout_limit)
+            conn = event.container.connect(self.server, user=self.user, password=self.password)
+            
+            print("waited for "+str(self.timeout_limit)+" seconds\n")
+            for topic in self.receive_topic_names:
+                self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic)})
+            self.connection = conn
+            self.timeout_limit*=2
+            print(str(self.get_connection_state())+" connection state\n")
+            
+        else:
+            time.sleep(self.timeout_limit)
+            conn = event.container.connect(self.server, user=self.user, password=self.password)
+
+            print("waited for "+str(self.timeout_limit)+" seconds\n")
+            for topic in self.receive_topic_names:
+                self.receivers.update({topic:event.container.create_receiver(conn, 'topic://%s' % topic)})
+            self.connection = conn
+        
+        return super().on_disconnected(event)
+
+
+    def get_connection_state(self):
+        try:
+            state = self.connection.state
+            if state == 18:
+                self.timeout_limit = self.timeout_limit_min
+        except Exception:
+            return 0
+        return state
 
     def on_message(self, event):
         self.receive_msg_time = time.time()
